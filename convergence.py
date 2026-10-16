@@ -1,16 +1,12 @@
-"""Convergence de l'arbre vers Black-Scholes avec rendement continu q.
+"""Convergence de l'arbre vers Black-Scholes.
 
-Le benchmark Black-Scholes n'est valable ici que sans dividende cash actif.
-Les listes et tableaux de ce fichier contiennent des résultats numériques ;
-les nœuds de l'arbre restent parcourus par leurs liens dans arbre_binomial.py.
+On price un call européen avec l'arbre pour différents nombres de pas N
+et on compare au prix Black-Scholes (avec un rendement de dividende q).
+Pas de dividende cash ici, sinon Black-Scholes n'est plus une référence exacte.
 """
-
-from __future__ import annotations
-
 import datetime as dt
 import gc
-from math import exp, isfinite, log, sqrt
-from numbers import Integral
+from math import exp, log, pi, sqrt
 from pathlib import Path
 from statistics import NormalDist
 from time import perf_counter
@@ -25,192 +21,174 @@ class Convergence:
 
     def __init__(self, market: Market, option: Option, pricing_date: dt.date) -> None:
         if option.exercise_type.lower() != "european":
-            raise ValueError("La comparaison à Black-Scholes concerne une option européenne.")
+            raise ValueError("Black-Scholes ne sert de référence que pour une option européenne.")
+        if market.dividend_amount != 0.0:
+            raise ValueError("Avec un dividende cash, Black-Scholes n'est pas une référence exacte.")
         self.market = market
         self.option = option
         self.pricing_date = pricing_date
-        self.results = None
+        self.maturity = (option.maturity - pricing_date).days / 365.0
+        if self.maturity <= 0:
+            raise ValueError("La maturité doit être postérieure à la date de calcul.")
         self.output = Path(__file__).resolve().parent
+        self.results = None
 
     def black_price(self, strike: float) -> float:
-        """Black-Scholes pour un rendement de dividende continu q.
+        """Prix européen avec rendement continu ; pas d'approximation cash.
 
-        Retrancher la valeur actuelle d'un dividende cash au spot dans cette
-        formule serait une approximation : ce fichier ne l'utilise pas comme
-        référence exacte de convergence.
+        Les cas K=0 et sigma=0 se traitent par leur limite, avant les
+        divisions par K ou sigma. Ils servent aussi de contrôles du moteur.
         """
-        dividend_date = self.market.ex_dividend_date
-        if (
-            self.market.dividend_amount != 0.0
-            and dividend_date is not None
-            and self.pricing_date < dividend_date <= self.option.maturity
-        ):
-            raise ValueError(
-                "Black-Scholes avec q n'est pas une référence exacte pour un "
-                "dividende cash actif. Utiliser les prix de l'arbre et une étude "
-                "de stabilité en N, ou annuler dividend_amount pour ce benchmark."
-            )
-
-        spot = self.market.spot
-        rate = self.market.rate
-        sigma = self.market.vol
+        if not np.isfinite(strike) or strike < 0:
+            raise ValueError("Le strike doit être fini et positif ou nul.")
+        # Formule de Black-Scholes avec rendement de dividende continu q
+        S = self.market.spot
+        r = self.market.rate
         q = self.market.dividend_yield
-        maturity = (self.option.maturity - self.pricing_date).days / 365.0
-        option_type = self.option.type.lower()
+        sigma = self.market.vol
+        T = self.maturity
 
-        if option_type not in ("call", "put"):
-            raise ValueError("Option type must be 'Call' or 'Put'")
-        if not all(isfinite(value) for value in (spot, rate, sigma, q, strike)):
-            raise ValueError("Les paramètres de Black-Scholes doivent être finis.")
-        if maturity < 0.0 or spot <= 0.0 or strike < 0.0 or sigma < 0.0:
-            raise ValueError(
-                "Il faut une échéance non passée, un spot > 0, un strike >= 0 "
-                "et une volatilité >= 0."
-            )
-        if maturity == 0.0:
-            if option_type == "call":
-                return max(spot - strike, 0.0)
-            return max(strike - spot, 0.0)
+        if strike == 0:
+            return S * exp(-q * T) if self.option.type.lower() == "call" else 0.0
+        if sigma == 0:
+            terminal_spot = S * exp((r - q) * T)
+            payoff = max(terminal_spot - strike, 0.0) if self.option.type.lower() == "call" else max(strike - terminal_spot, 0.0)
+            return exp(-r * T) * payoff
+        d1 = (log(S / strike) + (r - q + sigma**2 / 2) * T) / (sigma * sqrt(T))
+        d2 = d1 - sigma * sqrt(T)
+        N = NormalDist().cdf
+        if self.option.type.lower() == "call":
+            return S * exp(-q * T) * N(d1) - strike * exp(-r * T) * N(d2)
+        return strike * exp(-r * T) * N(-d2) - S * exp(-q * T) * N(-d1)
 
-        discount = exp(-rate * maturity)
-        discounted_spot = spot * exp(-q * maturity)
-        # Évite log(S/K) lorsque K = 0.
-        if strike == 0.0:
-            return discounted_spot if option_type == "call" else 0.0
-        if sigma == 0.0:
-            forward = spot * exp((rate - q) * maturity)
-            if option_type == "call":
-                return discount * max(forward - strike, 0.0)
-            return discount * max(strike - forward, 0.0)
-
-        standard_deviation = sigma * sqrt(maturity)
-        d1 = (
-            log(spot / strike) + (rate - q + sigma**2 / 2.0) * maturity
-        ) / standard_deviation
-        d2 = d1 - standard_deviation
-        normal = NormalDist()
-        if option_type == "call":
-            return discounted_spot * normal.cdf(d1) - strike * discount * normal.cdf(d2)
-        return strike * discount * normal.cdf(-d2) - discounted_spot * normal.cdf(-d1)
+    def triangle_constant(self) -> float:
+        # Constante C du "triangle rouge" : écart ≈ C / N.
+        # L'arbre ne voit pas le coude du payoff en K et perd l'aire d'un petit
+        # triangle entre deux nœuds. Cette aire est proportionnelle à Δt = T/N.
+        r = self.market.rate
+        q = self.market.dividend_yield
+        sigma = self.market.vol
+        T = self.maturity
+        if sigma == 0:
+            return 0.0
+        forward = self.market.spot * exp((r - q) * T)
+        return exp(-r * T) * forward * sigma**2 * T / (2 * sqrt(2 * pi) * sqrt(exp(sigma**2 * T) - 1))
 
     def run(self, steps: list[int]) -> None:
-        sizes = list(steps)
-        if not sizes:
-            raise ValueError("Fournir au moins un nombre de pas pour la convergence.")
-        if any(isinstance(n, bool) or not isinstance(n, Integral) or n <= 0 for n in sizes):
-            raise ValueError("Chaque nombre de pas doit être un entier strictement positif.")
+        # Pour chaque N : prix de l'arbre, écart avec Black-Scholes et temps de calcul
+        if not steps:
+            raise ValueError("Fournir au moins un nombre de pas.")
+        # Valider toute la série avant le premier calcul ou fichier créé.
+        for n in steps:
+            Model(self.pricing_date, n)
+        self.output.mkdir(parents=True, exist_ok=True)
         black = self.black_price(self.option.strike)
         rows = []
         print("Calcul de la convergence en cours...")
-
-        for n in sizes:
-            # Libérer les anciens arbres avant de chronométrer le suivant.
-            gc.collect()
+        for n in steps:
+            gc.collect()  # on vide la mémoire avant de chronométrer
             start = perf_counter()
-            tree = Tree(Model(self.pricing_date, int(n)), self.option, self.market)
+            tree = Tree(Model(self.pricing_date, n), self.option, self.market)
             tree.build()
             price = tree.price()
             elapsed = perf_counter() - start
             rows.append((n, price, price - black, elapsed))
             del tree
 
-        gc.collect()
-        self.results = np.array(rows, dtype=float)
-        np.savetxt(
-            self.output / "convergence_resultats.txt", self.results,
-            fmt=["%d", "%.10f", "%.10f", "%.6f"],
-            header="N  prix_arbre  ecart_arbre_moins_black  temps_secondes",
-        )
-        print(f"Prix Black-Scholes avec q : {black:.10f}")
-        print(f"Prix arbre à {n} pas : {price:.10f}")
-        print(f"Écart : {price - black:.10f}")
+        self.results = np.array(rows)
+        np.savetxt(self.output / "convergence_resultats.txt", self.results,
+                   fmt=["%d", "%.10f", "%.10f", "%.6f"],
+                   header="N  prix_arbre  ecart  temps_secondes")
+        print(f"Prix Black-Scholes : {black:.6f}")
+        print(f"Prix arbre avec {n} pas : {price:.6f}")
+        print(f"Écart : {price - black:.6f}")
+        print(f"Constante du triangle C = {self.triangle_constant():.4f}")
 
     def plot(self) -> None:
         if self.results is None:
-            raise ValueError("Exécuter run(steps) avant de tracer la convergence.")
-        n = self.results[:, 0]
-        prices = self.results[:, 1]
-        errors = self.results[:, 2]
-        times = self.results[:, 3]
+            raise RuntimeError("Appeler run(steps) avant plot().")
+        n, prices, errors, times = self.results.T
         black = self.black_price(self.option.strike)
-        fig, axes = plt.subplots(3, 1, figsize=(10, 12), layout="constrained")
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5), layout="constrained")
 
-        axes[0].plot(n, prices, ".", label="Prix de l'arbre")
-        axes[0].axhline(black, color="orange", label="Black-Scholes avec q")
-        axes[0].set(title="1. Convergence du prix", xlabel="Nombre de pas N", ylabel="Prix de l'option")
+        # 1. Le prix de l'arbre se rapproche du prix Black-Scholes
+        axes[0].plot(n, prices, ".", markersize=3, label="Arbre")
+        axes[0].axhline(black, color="red", label="Black-Scholes")
+        axes[0].set(title="Prix en fonction de N", xlabel="N", ylabel="Prix")
         axes[0].legend()
 
-        axes[1].plot(n, errors, ".")
+        # 2. Écart × N : si ça reste borné, l'écart diminue en 1/N
+        axes[1].plot(n, errors * n, ".", markersize=3)
         axes[1].axhline(0, color="black", linewidth=1)
-        axes[1].set(title="2. Écart entre l'arbre et Black-Scholes", xlabel="Nombre de pas N", ylabel="Prix arbre − prix Black")
+        axes[1].set(title="(Prix arbre − Black) × N", xlabel="N", ylabel="Écart × N")
 
-        axes[2].loglog(n, times, ".", label="Temps mesuré")
-        axes[2].loglog(n, times[-1] * (n / n[-1])**2, "--", label="Repère proportionnel à N²")
-        axes[2].set(title="3. Temps de calcul en log-log", xlabel="Nombre de pas N (log)", ylabel="Temps en secondes (log)")
+        # 3. Temps de calcul en log-log, comparé à N²
+        axes[2].loglog(n, times, ".", markersize=3, label="Temps mesuré")
+        axes[2].loglog(n, times[-1] * (n / n[-1])**2, "--", label="N²")
+        axes[2].set(title="Temps de calcul", xlabel="N", ylabel="Secondes")
         axes[2].legend()
-        for ax in axes:
-            ax.grid(True, alpha=0.25)
-        fig.savefig(self.output / "convergence.png", dpi=160)
 
-    def strike_prices(self, strikes: np.ndarray, n: int) -> list[float]:
-        """Réutiliser un arbre pour plusieurs strikes, y compris avec cash."""
-        option = Option(
-            self.option.strike, self.option.maturity,
-            self.option.type, self.option.exercise_type,
-        )
-        tree = Tree(Model(self.pricing_date, n), option, self.market)
-        tree.build()
-        prices = []
-        for strike in strikes:
-            option.strike = float(strike)
-            prices.append(tree.price())
-        del tree
-        gc.collect()
-        return prices
+        for ax in axes:
+            ax.grid(alpha=0.3)
+        fig.savefig(self.output / "convergence.png", dpi=150)
 
     def plot_strike(self) -> None:
-        # Assignment 1 : faire varier K avec un nombre de pas fixé.
+        # Écart en fonction du strike, pour N fixé
         strikes = np.linspace(80, 120, 161)
-        black_prices = [self.black_price(k) for k in strikes]
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5), layout="constrained")
-        fig.suptitle("Effet du strike — mêmes marché, dates et option européenne", fontsize=15)
-        axes[0].plot(strikes, black_prices, color="black", label="Black-Scholes avec q")
+        black_prices = np.array([self.black_price(k) for k in strikes])
+        fig, ax = plt.subplots(figsize=(8, 5), layout="constrained")
+
         for n in (10, 100):
-            prices = self.strike_prices(strikes, n)
-            axes[0].plot(strikes, prices, label=f"Arbre N = {n}")
-            axes[1].plot(strikes, np.array(prices) - black_prices, label=f"N = {n}")
-        axes[0].set(title="Prix en fonction du strike", xlabel="Strike K", ylabel="Prix")
-        axes[1].set(title="Écart en fonction du strike", xlabel="Strike K", ylabel="Prix arbre − prix Black")
-        axes[1].axhline(0, color="black", linewidth=1)
-        for ax in axes:
-            ax.legend()
-            ax.grid(True, alpha=0.25)
-        fig.savefig(self.output / "convergence_strike.png", dpi=160)
+            # L'arbre ne dépend pas du strike : on le construit une seule fois
+            option = Option(100, self.option.maturity, self.option.type, "European")
+            tree = Tree(Model(self.pricing_date, n), option, self.market)
+            tree.build()
+            prices = []
+            for k in strikes:
+                option.strike = k
+                prices.append(tree.price())
+            ax.plot(strikes, np.array(prices) - black_prices, label=f"N = {n}")
+
+        ax.axhline(0, color="black", linewidth=1)
+        ax.set(title="Écart arbre − Black en fonction du strike", xlabel="Strike K", ylabel="Écart")
+        ax.legend()
+        ax.grid(alpha=0.3)
+        fig.savefig(self.output / "convergence_strike.png", dpi=150)
 
 
 def main() -> None:
     pricing_date = dt.date(2026, 9, 15)
     maturity = dt.date(2027, 9, 2)
     option = Option(strike=101, maturity=maturity, type="Call", exercise_type="European")
-    market = Market(
-        spot=100,
-        rate=0.03,
-        vol=0.20,
-        dividend_yield=0.02,  # Rendement continu q ; mettre 0 pour l'exemple initial.
-        dividend_amount=0.0,  # Le benchmark BS exige l'absence de cash actif.
-        ex_dividend_date=None,
-    )
+    market = Market(spot=100, rate=0.03, vol=0.20, dividend_yield=0.02)
+
     study = Convergence(market, option, pricing_date)
-    # Garder des pas pairs et impairs pour voir les oscillations.
-    steps = list(range(1, 101))
-    for n in range(150, 1001, 50):
-        steps.extend([n - 1, n])
+    # Tous les N jusqu'à 300, puis un N impair et un N pair tous les 50 pas
+    steps = list(range(1, 301))
+    for n in range(350, 1001, 50):
+        steps += [n - 1, n]
     study.run(steps)
     study.plot()
     study.plot_strike()
-    print("Graphiques et résultats enregistrés dans le dossier du script.")
     plt.show()
 
 
 if __name__ == "__main__":
     main()
+
+
+# -----------------------------------------------------------------------------
+# Lecture des courbes (cours p24 et suivantes)
+# -----------------------------------------------------------------------------
+# Le payoff possède un coude au strike. Sa position entre deux nœuds change
+# lorsque N varie : l'erreur peut osciller et n'est pas monotone. Une bande
+# bornée pour N*(prix_arbre-prix_Black) est compatible avec un ordre 1/N ;
+# cela ne signifie pas que chaque erreur individuelle est exactement C/N.
+# ``triangle_constant`` illustre l'argument du triangle du cours, pas une
+# borne d'erreur universelle permettant d'arrêter automatiquement le calcul.
+#
+# Sans pruning, il y a (N+1)*(N+2)/2 nœuds dans le cas binomial standard.
+# Le temps et la mémoire sont donc d'ordre N². Les temps exacts dépendent
+# de la machine : lire convergence_resultats.txt après exécution.
+# L'étude de convergence conserve un seuil nul pour isoler l'erreur de
+# discrétisation ; comparer séparément les seuils pour mesurer l'élagage.
