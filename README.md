@@ -2,6 +2,57 @@
 
 Cette version part des deux fichiers **joints le 16 octobre 2026**, `arbre_binomial.py` et `convergence.py`. Les autres fichiers utiles proviennent du dépôt `benjaminchalet`. Les classes et les liens directs de la collègue sont conservés. Les ajouts sont commentés en français dans le code.
 
+## Interface Streamlit : tout explorer depuis un navigateur
+
+L'interface rassemble les fonctions existantes dans une application locale. Le moteur de calcul reste celui d'`arbre_binomial.py` : Streamlit lui transmet les paramètres et affiche les résultats. Aucun calcul de grec n'a été ajouté.
+
+### Lancer sous Windows / VS Code
+
+Le plus simple : **double-cliquer sur `LANCER_STREAMLIT.bat`** dans le dossier du projet. Le lanceur recherche d'abord Python 3.13 dans son emplacement Windows habituel, vérifie l'interpréteur trouvé, installe les dépendances de `requirements.txt`, puis ouvre l'application avec Streamlit. Il affiche l'erreur et reste ouvert si une étape échoue. Il ne modifie pas la politique d'exécution PowerShell.
+
+Dans le terminal PowerShell de VS Code, on peut aussi utiliser directement le Python 3.13 déjà vérifié :
+
+```powershell
+cd "C:\chemin\vers\benjaminchalet-main"
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m pip install -r requirements.txt
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m streamlit run app.py
+```
+
+Remplacer seulement le chemin du dossier de projet dans la première ligne. Le nom d'utilisateur n'est pas à écrire : `$env:LOCALAPPDATA` utilise automatiquement celui de la session Windows.
+
+Le fichier `LANCER_STREAMLIT.ps1` propose le même lancement depuis PowerShell si la configuration de la machine autorise déjà les scripts locaux. Si Windows bloque ce fichier, utiliser le `.bat` ou les deux commandes Python ci-dessus ; aucune modification de la politique PowerShell n'est nécessaire.
+
+Pour l'éditeur VS Code : **Ctrl + Maj + P → Python: Select Interpreter → Enter interpreter path**, puis choisir `%LOCALAPPDATA%\Programs\Python\Python313\python.exe` dans l'explorateur. Les paquets doivent être installés dans ce même interpréteur. Pour ouvrir l'application, utiliser **`python -m streamlit run app.py` dans le terminal** : le bouton **Run Python File** exécute un script ordinaire et ne démarre pas le serveur Streamlit correctement.
+
+L'adresse locale apparaît dans le terminal, généralement `http://localhost:8501`. Garder le terminal ouvert pendant l'utilisation et arrêter avec **Ctrl + C**. Les commandes lancent l'application sur son propre ordinateur ; elles ne la publient pas sur Internet.
+
+Sous macOS/Linux, ou si la commande `python` fonctionne déjà :
+
+```bash
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+### Paramètres et pages
+
+La barre latérale contient un formulaire commun : dates de calcul et de maturité, spot, strike, taux, volatilité, rendement continu, montant et date du dividende cash, nombre de pas, seuil de pruning, call/put et exercice européen/américain. **Valider le formulaire** pour appliquer les changements. Les taux affichés en pourcentage sont convertis en décimaux avant le calcul.
+
+| Page | Ce qu'on peut explorer |
+|---|---|
+| **Prix & comparaison** | Prix du contrat choisi, comparaison des quatre contrats call/put européen/américain, référence Black-Scholes quand elle est applicable. |
+| **Valeur & exercice** | Moyenne actualisée, valeur des contrats vivants et flux payés, zone d'exercice, premier exercice, cumul et expiration sans paiement. Données exportables en CSV. |
+| **Arbre & diagnostics** | Petit arbre SVG, coloration des nœuds, liens de voisinage facultatifs, décisions d'exercice, pruning et rapport de construction. Téléchargement SVG. |
+| **Convergence** | Prix, erreur brute et erreur × N face à Black-Scholes, temps et nombre de nœuds ; erreur selon le strike. Référence européenne sans pruning ni dividende cash actif. |
+| **Pruning** | Comparaison des seuils au même N : prix, écart au graphe complet, nombre de nœuds, coupes et temps de calcul. |
+| **Dividendes & taux** | Comparaisons call/put et américain/européen en faisant varier les taux ou les dividendes ; les autres paramètres restent ceux du formulaire. |
+| **Guide** | Explications des paramètres, des courbes, des probabilités et des limites du modèle, avec repères pour lire le code. |
+
+Les études répétant plusieurs calculs se lancent avec leurs **boutons explicites** : changer un réglage de l'étude n'exécute pas toute la série immédiatement. Les tableaux de résultats se téléchargent en CSV. Les limites de taille servent à garder l'application utilisable : pour le SVG, privilégier quelques pas ; le nombre de pas du dessin est indépendant de celui du pricing principal.
+
+Une probabilité d'exercice est risque-neutre. Le cumul des **premiers** exercices compte chaque trajectoire une fois ; la probabilité d'être dans la zone d'exercice peut compter la même trajectoire à plusieurs dates. Avec pruning, une conservation de masse correcte ne garantit pas à elle seule un prix identique à l'arbre complet.
+
+Le moteur gère un seul dividende cash. Certaines combinaisons cash / volatilité / nombre de pas rendent les probabilités trinômiales invalides : l'application présente alors l'erreur du modèle, au lieu de remplacer silencieusement les probabilités. Une référence Black-Scholes exacte n'est pas affichée pour une américaine ou un cash actif. Pour étudier les taux négatifs ou la prime américaine, utiliser la page **Dividendes & taux**.
+
 Le document de référence est **Dauphine-M2_2026-27_tree_1d_v2.pdf**, extrait du ZIP joint. Les numéros ci-dessous sont ceux imprimés sur les pages du PDF (deux diapositives par page).
 
 - Pages 7–11 : paramétrage binomial et trois probabilités au détachement cash.
@@ -11,7 +62,7 @@ Le document de référence est **Dauphine-M2_2026-27_tree_1d_v2.pdf**, extrait d
 
 ## Démarrage
 
-Python 3.10 ou plus récent, NumPy et Matplotlib suffisent. Aucun Graphviz ni exécutable externe n'est nécessaire.
+Python 3.10 ou plus récent est nécessaire. Les scripts de calcul utilisent NumPy et Matplotlib ; l'interface ajoute Streamlit, Pandas et Plotly. `requirements.txt` installe l'ensemble. Aucun Graphviz ni exécutable externe n'est nécessaire.
 
 ```bash
 python -m pip install -r requirements.txt
@@ -37,6 +88,10 @@ Les scripts régénèrent les résultats d'illustration dans le dossier choisi a
 
 | Fichier | Rôle |
 |---|---|
+| `app.py` | Interface Streamlit en sept pages et paramètres interactifs |
+| `interface_calculs.py` | Adaptation du moteur en résultats tabulaires, validation des paramètres et études pour l'interface |
+| `interface_exports.py` | Préparation des graphiques PNG/SVG, du CSV et du scénario JSON dans un ZIP temporaire |
+| `LANCER_STREAMLIT.bat` / `LANCER_STREAMLIT.ps1` | Lancement Windows avec sélection d'un Python valide et installation des dépendances |
 | `arbre_binomial.py` | Données, construction du sous-jacent, pricing et profils numériques |
 | `profils_option.py` | Courbes des pages 22–23 et export des résultats en CSV |
 | `debug_arbre.py` | Vérification des liens, masses et moments ; export SVG |
@@ -45,6 +100,8 @@ Les scripts régénèrent les résultats d'illustration dans le dossier choisi a
 | `test_dividendes.py` | Contrôles existants : Excel, moments, dates, dividendes et parité |
 | `test_profils.py` | Contrôles des profils et du premier arrêt |
 | `test_debug_arbre.py` | Contrôles du débogueur, corruptions volontaires et SVG |
+| `test_interface_calculs.py` | Contrôles des résultats exposés à Streamlit, des études et du SVG sans démarrer l'interface |
+| `test_app_streamlit.py` | Navigation, formulaire, études, génération SVG et téléchargement avec AppTest |
 | `exemple_dividendes.py` | Étude du dividende à taux nul, conservée du dépôt |
 
 ## 1. Comprendre la structure : un graphe de nœuds
@@ -238,3 +295,13 @@ Comparaison à N=1000, **sans cash**, avec les autres paramètres du put ci-dess
 | 1e-4 | 70809 | 9.5833469910 | +1.34e-4 | 0.653 s |
 
 Ces temps proviennent d'une exécution dans l'environnement cloud de travail et peuvent varier selon la machine et sa charge. La réduction du nombre de nœuds est plus directement reproductible. Un seuil plus agressif peut gagner du temps en augmentant l'erreur ; ces chiffres ne constituent pas une garantie pour d'autres options ou marchés.
+
+## Validation de l'interface Streamlit
+
+La version interactive ajoute 12 tests de la couche de calcul et 4 parcours AppTest : **50 tests passent au total**. Les parcours couvrent les sept pages, le changement d'exemple et l'application du formulaire, une date invalide, la suppression d'un résultat devenu périmé, les deux études de convergence, le pruning, les dividendes cash/continus, les taux, le dessin SVG et la préparation du ZIP des profils. L'accueil et les arbres SVG ont aussi été vérifiés dans Chromium.
+
+```bash
+python -m unittest -v test_dividendes test_profils test_debug_arbre test_interface_calculs test_app_streamlit
+```
+
+Les lanceurs `.bat` et `.ps1` ont été relus ; leur exécution native Windows n'a pas pu être testée depuis l'environnement Linux de développement. Ils privilégient précisément le Python 3.13 dont le chemin a été vérifié pendant la session Windows.
